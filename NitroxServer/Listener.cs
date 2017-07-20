@@ -14,26 +14,20 @@ namespace NitroxServer
 {
     public class Listener
     {
-        // A ConcurrentMap will not protect against concurrency issues when
-        // iterating keys and adding/removing values. You need to lock the Map
-        // when you're using it at all, including iterating values.
         private Dictionary<String, Player> playersById = new Dictionary<String, Player>();
-        
+
+        private PacketStorage packetStorage;
         private HashSet<Type> packetForwardBlacklist;
-        private HashSet<Type> loggingPacketBlackList;
+
+        private long packetCounter = 0;
 
         public Listener()
         {
+            packetStorage = new PacketStorage();
+
             packetForwardBlacklist = new HashSet<Type>
             {
                 typeof(Authenticate)
-            };
-            loggingPacketBlackList = new HashSet<Type>
-            {
-                typeof(AnimationChangeEvent),
-                typeof(Movement),
-                typeof(VehicleMovement),
-                typeof(ItemPosition)
             };
         }
 
@@ -65,15 +59,16 @@ namespace NitroxServer
             
             foreach(Packet packet in connection.GetPacketsFromRecievedData(ar))
             {
+                long packetId = Interlocked.Increment(ref packetCounter);
+                packet.PacketId = packetId;
+
                 Player player = GetPlayer(packet, connection);
                 connection.PlayerId = player.Id;
+
                 UpdatePlayerPosition(player, packet);
+                packetStorage.Persist(packet);
 
-                if (!loggingPacketBlackList.Contains(packet.GetType()))
-                {
-                    Console.WriteLine("Received packet from socket: " + packet.ToString() + " for player " + player.Id);
-                }
-
+                SendHistoryIfRequired(packet, player);
                 ForwardPacketToOtherPlayers(packet, player.Id);
             }
 
@@ -108,6 +103,25 @@ namespace NitroxServer
             if (packet.GetType() == typeof(Movement))
             {
                 player.Position = ((Movement)packet).PlayerPosition;
+            }
+        }
+
+        private void SendHistoryIfRequired(Packet packet, Player player)
+        {
+            if(packet is Authenticate)
+            {
+                lock (playersById) // prevents new packets from being sent until player is up to speed
+                {
+                    Authenticate auth = (Authenticate)packet;
+                    long lastSeenPacketId = (auth.LastPacketId.HasValue) ? auth.LastPacketId.Value : 0;
+                    foreach (Packet p in packetStorage.GetHistory())
+                    {
+                        if (p.PacketId > lastSeenPacketId)
+                        {
+                            player.Connection.SendPacket(p, new AsyncCallback(SendCompleted));
+                        }
+                    }
+                }
             }
         }
         

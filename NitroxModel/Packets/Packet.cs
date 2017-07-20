@@ -10,6 +10,7 @@ namespace NitroxModel.Packets
     public abstract class Packet
     {
         public String PlayerId { get; protected set; }
+        public long PacketId { get; set; }
 
         public Packet(String playerId)
         {
